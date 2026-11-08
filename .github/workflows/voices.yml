@@ -78,6 +78,7 @@ jobs:
         env:
           VOICE_RECIPE: ${{ secrets.VOICE_RECIPE }}
         run: |
+          command -v ffmpeg >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q ffmpeg; }
           pip install -q kokoro-onnx soundfile
           mkdir -p ~/kk && cd ~/kk
           curl -sSL -o kokoro.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx

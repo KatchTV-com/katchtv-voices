@@ -14,7 +14,6 @@ Model files: ~/kk/kokoro.onnx (kokoro-v1.0.onnx) and ~/kk/voices.bin (voices-v1.
 https://github.com/thewh1teagle/kokoro-onnx/releases (Kokoro-82M, Apache 2.0).
 """
 import json, os, sys, time, subprocess, tempfile
-import numpy as np, soundfile as sf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VOICES = ('f', 'm')
@@ -39,6 +38,8 @@ def main():
         return not all(old.get(g, {}).get('p', {}).get(kk) for g in VOICES for kk in keys)
     if len(sys.argv) > 3 and sys.argv[3] == '--todo': print(sum(1 for r in req if needs(r))); return
     budget = float(sys.argv[3]) if len(sys.argv) > 3 else 150
+    global np, sf
+    import numpy as np, soundfile as sf  # only needed when voicing (the --todo check runs without them)
     home = os.environ.get('KOKORO_DIR', os.path.expanduser('~/kk')); cache = os.path.join(home, 'cache'); t0 = time.time()
     k = None
     styles = None
