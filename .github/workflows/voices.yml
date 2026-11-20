@@ -6,7 +6,11 @@
 name: Voices (Read button)
 on:
   schedule:
+    # Three times a day (GitHub often starts scheduled jobs hours late or skips one), so a new article gets its voice the same day.
+    # A run with nothing to voice ends in about a minute, and this public repo runs free.
     - cron: "17 8 * * *"
+    - cron: "43 15 * * *"
+    - cron: "29 22 * * *"
   workflow_dispatch: {}
   push:
     branches: [main]
