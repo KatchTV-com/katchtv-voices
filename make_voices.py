@@ -6,7 +6,8 @@ usage: python3 make_voices.py REQUESTS.json OUT_DIR [SECONDS]      (or: ... REQU
   REQUESTS.json  [{"slug": "...", "parts": ["sentence as read.js speaks it", ...]}]  (D1 table voice_requests)
   OUT_DIR        v/ of the "audio" branch (katchtv.com/v/... serves it through Cloudflare)
   SECONDS        stop making new sentences after this many seconds (default 150); just run it again to continue.
-Each sentence is made once and kept in ~/kk/cache/<f|m>/<key>.npy, so nothing is made twice.
+Each sentence is made once and kept in ~/kk/cache/<f|m>/<key>.ogg (Opus, about 20x smaller than raw .npy, so the runner's disk never fills),
+so nothing is made twice. Older raw <key>.npy files are converted on start.
 Per article it writes <slug>-f1.mp3, <slug>-m1.mp3 and <slug>.json (where each sentence starts and ends).
 The voices are mixed from the free Kokoro voices with the recipe in the VOICE_RECIPE secret (kept private, so Female 1 / Male 1 stay ours):
   {"f": {"<kokoro voice>": weight, ...}, "m": {...}}
@@ -44,6 +45,19 @@ def main():
     k = None
     styles = None
     os.makedirs(out, exist_ok=True); finished = True
+    def save(f, a): sf.write(f, np.asarray(a, dtype=np.float32), SR, format='OGG', subtype='OPUS')
+    def load(base):
+        if os.path.exists(base + '.ogg'): return sf.read(base + '.ogg', dtype='float32')[0]
+        return np.load(base + '.npy').astype(np.float32)
+    n = 0  # convert the old raw cache once (frees most of the disk)
+    for g in VOICES:
+        d = os.path.join(cache, g)
+        if not os.path.isdir(d): continue
+        for name in os.listdir(d):
+            if not name.endswith('.npy'): continue
+            try: save(os.path.join(d, name[:-4] + '.ogg'), np.load(os.path.join(d, name))); os.remove(os.path.join(d, name)); n += 1
+            except Exception as e: print('skip', name, e)
+    if n: print('converted', n, 'cached sentences to Opus in', round(time.time() - t0), 's')
     for r in req:
         slug, parts = r['slug'], [p for p in r['parts'] if p.strip()]
         keys = [vkey(p) for p in parts]
@@ -53,8 +67,8 @@ def main():
         for g in VOICES:
             os.makedirs(os.path.join(cache, g), exist_ok=True)
             for p, kk in zip(parts, keys):
-                f = os.path.join(cache, g, kk + '.npy')
-                if os.path.exists(f): continue
+                f = os.path.join(cache, g, kk + '.ogg')
+                if os.path.exists(f) or os.path.exists(f[:-4] + '.npy'): continue
                 if time.time() - t0 > budget: ready = False; break
                 if k is None:
                     rec = os.environ.get('VOICE_RECIPE')
@@ -62,8 +76,12 @@ def main():
                     R, bank = json.loads(rec), np.load(os.path.join(home, 'voices.bin'))
                     styles = {g2: sum(bank[n] * w for n, w in R[g2].items()) for g2 in VOICES}
                     from kokoro_onnx import Kokoro
-                    k = Kokoro(os.path.join(home, 'kokoro.onnx'), os.path.join(home, 'voices.bin'))
-                a, _ = k.create(p, voice=styles[g], speed=1.0, lang='en-us'); np.save(f, a.astype(np.float32))
+                    try:  # leave one CPU core free, so the GitHub runner never loses contact (runs #31/#32 died that way)
+                        import onnxruntime as ort; so = ort.SessionOptions(); so.intra_op_num_threads = max(1, (os.cpu_count() or 2) - 1)
+                        k = Kokoro.from_session(ort.InferenceSession(os.path.join(home, 'kokoro.onnx'), so, providers=['CPUExecutionProvider']), os.path.join(home, 'voices.bin'))
+                    except Exception as e:
+                        print('note: default Kokoro session', e); k = Kokoro(os.path.join(home, 'kokoro.onnx'), os.path.join(home, 'voices.bin'))
+                a, _ = k.create(p, voice=styles[g], speed=1.0, lang='en-us'); save(f, a)
             if not ready: break
         if not ready: finished = False; print('more ', slug); break
         man = {'slug': slug}
@@ -71,7 +89,7 @@ def main():
             seen, chunks, pos = {}, [], 0.0; gap = np.zeros(int(GAP * SR), dtype=np.float32)
             for kk in keys:
                 if kk in seen: continue
-                a = np.load(os.path.join(cache, g, kk + '.npy')); seen[kk] = [round(pos, 3), round(pos + len(a) / SR, 3)]
+                a = load(os.path.join(cache, g, kk)); seen[kk] = [round(pos, 3), round(pos + len(a) / SR, 3)]
                 chunks += [a, gap]; pos += len(a) / SR + GAP
             with tempfile.TemporaryDirectory() as td:
                 wav = os.path.join(td, 'a.wav'); sf.write(wav, np.concatenate(chunks), SR)
