@@ -72,7 +72,7 @@ jobs:
           echo "Articles to voice: $todo"; echo "TODO=$todo" >> "$GITHUB_ENV"
       - name: Sentence cache
         if: steps.plan.outputs.go == 'yes' && env.TODO != '0'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/kk/cache
           key: voices-${{ github.run_id }}
@@ -87,11 +87,26 @@ jobs:
           mkdir -p ~/kk && cd ~/kk
           curl -sSL -o kokoro.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
           curl -sSL -o voices.bin https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
-          cd "$RUNNER_TEMP/va" && python3 "$GITHUB_WORKSPACE/make_voices.py" "$RUNNER_TEMP/req.json" v "$RUN_SECONDS"
-          git add -A
-          if ! git diff --cached --quiet; then
-            # keep only the newest audio (one commit), so the repo never grows
-            git checkout -q --orphan fresh
-            git -c user.name=katchtv-bot -c user.email=bot@katchtv.com commit -q -m "voices: $(date -u +%F)"
-            git push -q -f origin fresh:audio
-          fi
+          cd "$RUNNER_TEMP/va"
+          # Work in 40-minute parts and put the finished audio live after EACH part, so a run that GitHub stops
+          # early (runs #31 and #32 on 2026-11-23 lost hours of work) keeps everything it finished.
+          end=$(( $(date +%s) + RUN_SECONDS )); n=0
+          while :; do
+            left=$(( end - $(date +%s) )); [ "$left" -lt 300 ] && break
+            part=$(( left < 2400 ? left : 2400 )); n=$((n+1))
+            python3 "$GITHUB_WORKSPACE/make_voices.py" "$RUNNER_TEMP/req.json" v "$part" | tee "$RUNNER_TEMP/part.log"
+            git add -A
+            if ! git diff --cached --quiet; then
+              # keep only the newest audio (one commit), so the repo never grows
+              git checkout -q --orphan "fresh$n"
+              git -c user.name=katchtv-bot -c user.email=bot@katchtv.com commit -q -m "voices: $(date -u +%F) part $n"
+              git push -q -f origin "fresh$n:audio" && echo "Part $n is live"
+            fi
+            grep -q '^ALL DONE' "$RUNNER_TEMP/part.log" && break
+          done
+      - name: Save sentence cache
+        if: always() && steps.plan.outputs.go == 'yes' && env.TODO != '0'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/kk/cache
+          key: voices-${{ github.run_id }}
